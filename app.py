@@ -63,6 +63,12 @@ def init_db():
             banned INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS currency_definitions (
+            currency_code TEXT PRIMARY KEY,
+            currency_name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS currencies (
             player_id TEXT NOT NULL,
             currency_code TEXT NOT NULL,
@@ -112,10 +118,10 @@ def now_iso():
 
 
 def new_player_id():
-    # PlayFab-style short ID, e.g. FLY-7F3K9QZ2
+    # e.g. PLAYER-7F3K9Q
     alphabet = string.ascii_uppercase + string.digits
-    suffix = "".join(secrets.choice(alphabet) for _ in range(8))
-    return f"FLY-{suffix}"
+    suffix = "".join(secrets.choice(alphabet) for _ in range(6))
+    return f"PLAYER-{suffix}"
 
 
 def new_token():
@@ -171,7 +177,7 @@ def require_admin(f):
 def login():
     """
     Called by Unity on game start. If the device_id has never been seen,
-    a new PlayFab-style player ID is created automatically.
+    a new player ID is created automatically.
     """
     body = request.get_json(force=True, silent=True) or {}
     device_id = body.get("device_id")
@@ -194,11 +200,6 @@ def login():
                (player_id, device_id, session_token, display_name, created_at, last_login, banned)
                VALUES (?, ?, ?, ?, ?, ?, 0)""",
             (player_id, device_id, token, display_name, now_iso(), now_iso()),
-        )
-        # starter currency grant
-        db.execute(
-            "INSERT INTO currencies (player_id, currency_code, amount) VALUES (?, 'GOLD', 100)",
-            (player_id,),
         )
         db.commit()
         is_new = True
@@ -274,6 +275,13 @@ def get_currency(player):
     return jsonify({"currencies": {r["currency_code"]: r["amount"] for r in rows}})
 
 
+def currency_exists(db, code):
+    row = db.execute(
+        "SELECT 1 FROM currency_definitions WHERE currency_code = ?", (code,)
+    ).fetchone()
+    return row is not None
+
+
 def _adjust_currency(db, player_id, code, delta):
     row = db.execute(
         "SELECT amount FROM currencies WHERE player_id = ? AND currency_code = ?",
@@ -306,6 +314,8 @@ def add_currency(player):
     if not code or not isinstance(amount, int) or amount <= 0:
         return jsonify({"error": "currency_code and positive integer amount required"}), 400
     db = get_db()
+    if not currency_exists(db, code):
+        return jsonify({"error": f"Currency '{code}' has not been created yet. Create it in the admin dashboard first."}), 400
     new_amount = _adjust_currency(db, player["player_id"], code, amount)
     return jsonify({"currency_code": code, "amount": new_amount})
 
@@ -319,10 +329,59 @@ def subtract_currency(player):
     if not code or not isinstance(amount, int) or amount <= 0:
         return jsonify({"error": "currency_code and positive integer amount required"}), 400
     db = get_db()
+    if not currency_exists(db, code):
+        return jsonify({"error": f"Currency '{code}' has not been created yet. Create it in the admin dashboard first."}), 400
     new_amount = _adjust_currency(db, player["player_id"], code, -amount)
     if new_amount is None:
         return jsonify({"error": "Insufficient funds"}), 400
     return jsonify({"currency_code": code, "amount": new_amount})
+
+
+# ---------------------------------------------------------------------------
+# Currency definitions (must be created before a currency code can be used)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/currencies", methods=["GET"])
+def get_currency_definitions():
+    """Public — lets Unity (and the dashboard) fetch which currencies exist."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT currency_code, currency_name FROM currency_definitions ORDER BY currency_name"
+    ).fetchall()
+    return jsonify(
+        {"currencies": [{"code": r["currency_code"], "name": r["currency_name"]} for r in rows]}
+    )
+
+
+@app.route("/api/admin/currencies", methods=["POST"])
+@require_admin
+def admin_create_currency():
+    body = request.get_json(force=True, silent=True) or {}
+    code = (body.get("code") or "").strip().upper()
+    name = (body.get("name") or "").strip()
+    if not code or not name:
+        return jsonify({"error": "code and name are required"}), 400
+    db = get_db()
+    existing = db.execute(
+        "SELECT 1 FROM currency_definitions WHERE currency_code = ?", (code,)
+    ).fetchone()
+    if existing:
+        return jsonify({"error": f"Currency '{code}' already exists"}), 400
+    db.execute(
+        "INSERT INTO currency_definitions (currency_code, currency_name, created_at) VALUES (?, ?, ?)",
+        (code, name, now_iso()),
+    )
+    db.commit()
+    return jsonify({"success": True, "code": code, "name": name})
+
+
+@app.route("/api/admin/currencies/<code>", methods=["DELETE"])
+@require_admin
+def admin_delete_currency(code):
+    db = get_db()
+    db.execute("DELETE FROM currency_definitions WHERE currency_code = ?", (code,))
+    db.commit()
+    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +531,36 @@ def admin_get_player(player_id):
     )
 
 
+@app.route("/api/admin/players/<player_id>", methods=["DELETE"])
+@require_admin
+def admin_delete_player(player_id):
+    db = get_db()
+    player = db.execute("SELECT 1 FROM players WHERE player_id = ?", (player_id,)).fetchone()
+    if not player:
+        return jsonify({"error": "Player not found"}), 404
+    db.execute("DELETE FROM inventory WHERE player_id = ?", (player_id,))
+    db.execute("DELETE FROM player_data WHERE player_id = ?", (player_id,))
+    db.execute("DELETE FROM currencies WHERE player_id = ?", (player_id,))
+    db.execute("DELETE FROM players WHERE player_id = ?", (player_id,))
+    db.commit()
+    return jsonify({"success": True, "deleted": player_id})
+
+
+@app.route("/api/admin/players/<player_id>/inventory/<instance_id>", methods=["DELETE"])
+@require_admin
+def admin_revoke_item(player_id, instance_id):
+    """Revoke (delete) a specific inventory item instance from a player."""
+    db = get_db()
+    row = db.execute(
+        "SELECT 1 FROM inventory WHERE instance_id = ? AND player_id = ?", (instance_id, player_id)
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "Inventory item not found for this player"}), 404
+    db.execute("DELETE FROM inventory WHERE instance_id = ?", (instance_id,))
+    db.commit()
+    return jsonify({"success": True, "revoked": instance_id})
+
+
 @app.route("/api/admin/players/<player_id>/currency", methods=["POST"])
 @require_admin
 def admin_set_currency(player_id):
@@ -481,6 +570,8 @@ def admin_set_currency(player_id):
     if not code or not isinstance(amount, int) or amount < 0:
         return jsonify({"error": "currency_code and non-negative integer amount required"}), 400
     db = get_db()
+    if not currency_exists(db, code):
+        return jsonify({"error": f"Currency '{code}' has not been created yet. Create it in the admin dashboard first."}), 400
     db.execute(
         """INSERT INTO currencies (player_id, currency_code, amount) VALUES (?, ?, ?)
            ON CONFLICT(player_id, currency_code) DO UPDATE SET amount = excluded.amount""",
@@ -531,6 +622,8 @@ def admin_upsert_catalog_item():
     if not all(k in body for k in required):
         return jsonify({"error": f"Required fields: {required}"}), 400
     db = get_db()
+    if not currency_exists(db, body["currency_code"]):
+        return jsonify({"error": f"Currency '{body['currency_code']}' has not been created yet. Create it first."}), 400
     db.execute(
         """INSERT INTO catalog (item_id, name, description, currency_code, price, icon_url, item_class, custom_data)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
