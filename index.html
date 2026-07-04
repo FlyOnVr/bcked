@@ -23,6 +23,7 @@
       <h2>Fusion Backend</h2>
       <button class="nav-btn active" data-tab="players">Players</button>
       <button class="nav-btn" data-tab="catalog">Catalog</button>
+      <button class="nav-btn" data-tab="currencies">Currency</button>
       <button class="nav-btn" data-tab="player-detail" style="display:none" id="detail-nav">Player Detail</button>
       <button id="disconnect-btn" class="disconnect">Disconnect</button>
     </nav>
@@ -44,17 +45,50 @@
       <section id="tab-catalog" class="tab hidden">
         <div class="tab-header">
           <h2>Catalog</h2>
+          <button id="new-item-btn">+ New Item</button>
+        </div>
+        <table id="catalog-table">
+          <thead>
+            <tr><th>Item ID</th><th>Name</th><th>Class</th><th>Price</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="tab-item-create" class="tab hidden">
+        <div class="tab-header">
+          <h2>New Catalog Item</h2>
+          <button id="back-to-catalog">← Back</button>
         </div>
         <form id="catalog-form" class="card">
-          <h3>Add / Update Item</h3>
           <input id="item-id" placeholder="item_id (e.g. sword_iron)" required>
           <input id="item-name" placeholder="Display name" required>
           <input id="item-desc" placeholder="Description">
-          <input id="item-currency" placeholder="Currency code (e.g. GOLD)" required>
+          <select id="item-currency" required></select>
           <input id="item-price" type="number" placeholder="Price" required>
           <input id="item-class" placeholder="Item class (e.g. weapon, cosmetic)">
           <input id="item-icon" placeholder="Icon URL">
           <button type="submit">Save Item</button>
+          <p id="catalog-form-error" class="error"></p>
+        </form>
+      </section>
+
+      <section id="tab-currencies" class="tab hidden">
+        <div class="tab-header">
+          <h2>Currency</h2>
+        </div>
+        <table id="currency-table">
+          <thead>
+            <tr><th>Code</th><th>Name</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <form id="currency-form" class="card">
+          <h3>Create New Currency</h3>
+          <input id="new-currency-code" placeholder="Code (e.g. GOLD)" required>
+          <input id="new-currency-name" placeholder="Display name (e.g. Gold Coins)" required>
+          <button type="submit">Create Currency</button>
+          <p id="currency-form-error" class="error"></p>
         </form>
       </section>
 
@@ -68,7 +102,7 @@
             <h3>Currencies</h3>
             <div id="detail-currencies"></div>
             <div class="inline-form">
-              <input id="set-currency-code" placeholder="Currency code">
+              <select id="set-currency-code"></select>
               <input id="set-currency-amount" type="number" placeholder="Amount">
               <button id="set-currency-btn">Set</button>
             </div>
@@ -90,6 +124,7 @@
             <h3>Account</h3>
             <div id="detail-account"></div>
             <button id="ban-toggle-btn"></button>
+            <button id="delete-account-btn" class="danger-btn">Delete Account</button>
           </div>
         </div>
       </section>
