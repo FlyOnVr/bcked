@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fusion Backend — Admin</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="login-screen" class="screen">
+    <div class="login-box">
+      <h1>Fusion Backend</h1>
+      <p class="subtitle">Admin Dashboard</p>
+      <input id="backend-url" type="text" placeholder="Backend URL (e.g. https://yourapp.onrender.com)">
+      <input id="admin-key" type="password" placeholder="Admin key">
+      <button id="connect-btn">Connect</button>
+      <p id="login-error" class="error"></p>
+    </div>
+  </div>
+
+  <div id="app-screen" class="screen hidden">
+    <nav class="sidebar">
+      <h2>Fusion Backend</h2>
+      <button class="nav-btn active" data-tab="players">Players</button>
+      <button class="nav-btn" data-tab="catalog">Catalog</button>
+      <button class="nav-btn" data-tab="player-detail" style="display:none" id="detail-nav">Player Detail</button>
+      <button id="disconnect-btn" class="disconnect">Disconnect</button>
+    </nav>
+
+    <main class="content">
+      <section id="tab-players" class="tab">
+        <div class="tab-header">
+          <h2>Players</h2>
+          <button id="refresh-players">Refresh</button>
+        </div>
+        <table id="players-table">
+          <thead>
+            <tr><th>Player ID</th><th>Display Name</th><th>Created</th><th>Last Login</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="tab-catalog" class="tab hidden">
+        <div class="tab-header">
+          <h2>Catalog</h2>
+        </div>
+        <form id="catalog-form" class="card">
+          <h3>Add / Update Item</h3>
+          <input id="item-id" placeholder="item_id (e.g. sword_iron)" required>
+          <input id="item-name" placeholder="Display name" required>
+          <input id="item-desc" placeholder="Description">
+          <input id="item-currency" placeholder="Currency code (e.g. GOLD)" required>
+          <input id="item-price" type="number" placeholder="Price" required>
+          <input id="item-class" placeholder="Item class (e.g. weapon, cosmetic)">
+          <input id="item-icon" placeholder="Icon URL">
+          <button type="submit">Save Item</button>
+        </form>
+      </section>
+
+      <section id="tab-player-detail" class="tab hidden">
+        <div class="tab-header">
+          <h2 id="detail-title">Player</h2>
+          <button id="back-to-players">← Back</button>
+        </div>
+        <div class="detail-grid">
+          <div class="card">
+            <h3>Currencies</h3>
+            <div id="detail-currencies"></div>
+            <div class="inline-form">
+              <input id="set-currency-code" placeholder="Currency code">
+              <input id="set-currency-amount" type="number" placeholder="Amount">
+              <button id="set-currency-btn">Set</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Inventory</h3>
+            <div id="detail-inventory"></div>
+            <div class="inline-form">
+              <input id="grant-item-id" placeholder="item_id">
+              <input id="grant-quantity" type="number" placeholder="Qty" value="1">
+              <button id="grant-item-btn">Grant</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Cloud Save Data</h3>
+            <pre id="detail-data"></pre>
+          </div>
+          <div class="card">
+            <h3>Account</h3>
+            <div id="detail-account"></div>
+            <button id="ban-toggle-btn"></button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
