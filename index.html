@@ -24,6 +24,7 @@
       <button class="nav-btn active" data-tab="players">Players</button>
       <button class="nav-btn" data-tab="catalog">Catalog</button>
       <button class="nav-btn" data-tab="currencies">Currency</button>
+      <button class="nav-btn" data-tab="cloudscript">Cloud Script</button>
       <button class="nav-btn" data-tab="player-detail" style="display:none" id="detail-nav">Player Detail</button>
       <button id="disconnect-btn" class="disconnect">Disconnect</button>
     </nav>
@@ -92,12 +93,75 @@
         </form>
       </section>
 
+      <section id="tab-cloudscript" class="tab hidden">
+        <div class="tab-header">
+          <h2>Cloud Script</h2>
+        </div>
+        <p style="color:var(--steel-400); font-size:13px; margin-top:-8px;">
+          Named, server-authoritative action bundles. Unity triggers a script by name only —
+          it never controls what the script actually does.
+        </p>
+        <table id="cloudscript-table">
+          <thead>
+            <tr><th>Script Name</th><th>Description</th><th>Actions</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <form id="cloudscript-form" class="card">
+          <h3>Create / Update Script</h3>
+          <input id="cs-name" placeholder="script_name (e.g. kill_reward)" required>
+          <input id="cs-description" placeholder="Description (optional)">
+          <textarea id="cs-actions" rows="8" placeholder='[
+  {"type":"grant_currency","currency_code":"GOLD","amount":25},
+  {"type":"grant_item","item_id":"potion","quantity":1},
+  {"type":"subtract_currency","currency_code":"GOLD","amount":10},
+  {"type":"set_data","key":"last_kill_at","value":"now"}
+]'></textarea>
+          <p style="color:var(--steel-400); font-size:12px;">
+            Valid action types: <code>grant_currency</code>, <code>subtract_currency</code>, <code>grant_item</code>, <code>set_data</code>
+          </p>
+          <button type="submit">Save Script</button>
+          <p id="cloudscript-form-error" class="error"></p>
+        </form>
+      </section>
+
       <section id="tab-player-detail" class="tab hidden">
         <div class="tab-header">
           <h2 id="detail-title">Player</h2>
           <button id="back-to-players">← Back</button>
         </div>
-        <div class="detail-grid">
+
+        <div class="subnav">
+          <button class="subnav-btn active" data-subtab="overview">Overview</button>
+          <button class="subnav-btn" data-subtab="bans">Bans</button>
+          <button class="subnav-btn" data-subtab="currency">Currency</button>
+          <button class="subnav-btn" data-subtab="inventory">Inventory</button>
+          <button class="subnav-btn" data-subtab="logins">Logins</button>
+          <button class="subnav-btn" data-subtab="cloudscript-player">Cloud Script</button>
+        </div>
+
+        <div id="subtab-overview" class="subtab">
+          <div class="card">
+            <h3>Account</h3>
+            <div id="detail-account"></div>
+            <button id="delete-account-btn" class="danger-btn">Delete Account</button>
+          </div>
+          <div class="card">
+            <h3>Cloud Save Data</h3>
+            <pre id="detail-data"></pre>
+          </div>
+        </div>
+
+        <div id="subtab-bans" class="subtab hidden">
+          <div class="card">
+            <h3>Ban Status</h3>
+            <div id="detail-ban-status"></div>
+            <input id="ban-reason-input" placeholder="Reason (shown when banning)">
+            <button id="ban-toggle-btn"></button>
+          </div>
+        </div>
+
+        <div id="subtab-currency" class="subtab hidden">
           <div class="card">
             <h3>Currencies</h3>
             <div id="detail-currencies"></div>
@@ -107,6 +171,9 @@
               <button id="set-currency-btn">Set</button>
             </div>
           </div>
+        </div>
+
+        <div id="subtab-inventory" class="subtab hidden">
           <div class="card">
             <h3>Inventory</h3>
             <div id="detail-inventory"></div>
@@ -116,15 +183,23 @@
               <button id="grant-item-btn">Grant</button>
             </div>
           </div>
+        </div>
+
+        <div id="subtab-logins" class="subtab hidden">
           <div class="card">
-            <h3>Cloud Save Data</h3>
-            <pre id="detail-data"></pre>
+            <h3>Login History</h3>
+            <div id="detail-logins"></div>
+          </div>
+        </div>
+
+        <div id="subtab-cloudscript-player" class="subtab hidden">
+          <div class="card">
+            <h3>Run a Script on This Player</h3>
+            <div id="cs-player-script-list"></div>
           </div>
           <div class="card">
-            <h3>Account</h3>
-            <div id="detail-account"></div>
-            <button id="ban-toggle-btn"></button>
-            <button id="delete-account-btn" class="danger-btn">Delete Account</button>
+            <h3>Execution Log</h3>
+            <div id="cs-player-log"></div>
           </div>
         </div>
       </section>
