@@ -209,7 +209,7 @@ def require_admin(f):
 def login():
     """
     Called by Unity on game start. If the device_id has never been seen,
-    a new PlayFab-style player ID is created automatically.
+    a new player ID is created automatically.
     """
     body = request.get_json(force=True, silent=True) or {}
     device_id = body.get("device_id")
