@@ -107,9 +107,41 @@ def init_db():
             FOREIGN KEY (player_id) REFERENCES players(player_id),
             FOREIGN KEY (item_id) REFERENCES catalog(item_id)
         );
+
+        CREATE TABLE IF NOT EXISTS player_logins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id TEXT NOT NULL,
+            logged_in_at TEXT NOT NULL,
+            FOREIGN KEY (player_id) REFERENCES players(player_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS cloud_scripts (
+            script_name TEXT PRIMARY KEY,
+            actions_json TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS cloud_script_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id TEXT NOT NULL,
+            script_name TEXT NOT NULL,
+            result_json TEXT,
+            success INTEGER NOT NULL,
+            executed_at TEXT NOT NULL,
+            FOREIGN KEY (player_id) REFERENCES players(player_id)
+        );
         """
     )
     conn.commit()
+
+    # Migration: add ban_reason to players if upgrading from an older schema
+    try:
+        conn.execute("ALTER TABLE players ADD COLUMN ban_reason TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.close()
 
 
@@ -177,7 +209,7 @@ def require_admin(f):
 def login():
     """
     Called by Unity on game start. If the device_id has never been seen,
-    a new player ID is created automatically.
+    a new PlayFab-style player ID is created automatically.
     """
     body = request.get_json(force=True, silent=True) or {}
     device_id = body.get("device_id")
@@ -214,6 +246,12 @@ def login():
             (token, now_iso(), row["player_id"]),
         )
         db.commit()
+
+    db.execute(
+        "INSERT INTO player_logins (player_id, logged_in_at) VALUES (?, ?)",
+        (row["player_id"], now_iso()),
+    )
+    db.commit()
 
     return jsonify(
         {
@@ -471,6 +509,205 @@ def purchase(player):
 
 
 # ---------------------------------------------------------------------------
+# Cloud Script
+#
+# Real PlayFab CloudScript runs arbitrary server-side JavaScript. Running
+# arbitrary code triggered by a game client is a real security risk (a
+# modified client could execute anything on your server), so this is a safer
+# equivalent: named, admin-defined bundles of fixed actions (grant currency,
+# grant an item, subtract currency, set a data key). Unity triggers a script
+# by name only — it can never choose what the script does, just that it runs.
+# ---------------------------------------------------------------------------
+
+VALID_ACTION_TYPES = {"grant_currency", "subtract_currency", "grant_item", "set_data"}
+
+
+def run_cloud_script(db, player_id, script_name):
+    """Executes a named script's actions against a player. Returns (success, results)."""
+    script = db.execute(
+        "SELECT * FROM cloud_scripts WHERE script_name = ?", (script_name,)
+    ).fetchone()
+    if not script:
+        return False, [{"error": f"Cloud script '{script_name}' not found"}]
+
+    try:
+        actions = json.loads(script["actions_json"])
+    except (TypeError, ValueError):
+        return False, [{"error": "Script has malformed actions"}]
+
+    results = []
+    overall_success = True
+
+    for action in actions:
+        a_type = action.get("type")
+        if a_type == "grant_currency":
+            code = action.get("currency_code")
+            amount = int(action.get("amount", 0))
+            if not currency_exists(db, code):
+                results.append({"type": a_type, "error": f"Currency '{code}' does not exist"})
+                overall_success = False
+                continue
+            new_amount = _adjust_currency(db, player_id, code, amount)
+            results.append({"type": a_type, "currency_code": code, "new_amount": new_amount})
+
+        elif a_type == "subtract_currency":
+            code = action.get("currency_code")
+            amount = int(action.get("amount", 0))
+            if not currency_exists(db, code):
+                results.append({"type": a_type, "error": f"Currency '{code}' does not exist"})
+                overall_success = False
+                continue
+            new_amount = _adjust_currency(db, player_id, code, -amount)
+            if new_amount is None:
+                results.append({"type": a_type, "error": "Insufficient funds"})
+                overall_success = False
+            else:
+                results.append({"type": a_type, "currency_code": code, "new_amount": new_amount})
+
+        elif a_type == "grant_item":
+            item_id = action.get("item_id")
+            quantity = int(action.get("quantity", 1))
+            item = db.execute("SELECT * FROM catalog WHERE item_id = ?", (item_id,)).fetchone()
+            if not item:
+                results.append({"type": a_type, "error": f"Item '{item_id}' not found in catalog"})
+                overall_success = False
+                continue
+            instance_id = new_instance_id()
+            db.execute(
+                """INSERT INTO inventory (instance_id, player_id, item_id, quantity, custom_data, acquired_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (instance_id, player_id, item_id, quantity, None, now_iso()),
+            )
+            db.commit()
+            results.append({"type": a_type, "item_id": item_id, "quantity": quantity, "instance_id": instance_id})
+
+        elif a_type == "set_data":
+            key = action.get("key")
+            value = action.get("value")
+            db.execute(
+                """INSERT INTO player_data (player_id, key, value, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(player_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                (player_id, key, json.dumps(value), now_iso()),
+            )
+            db.commit()
+            results.append({"type": a_type, "key": key, "value": value})
+
+        else:
+            results.append({"type": a_type, "error": "Unknown action type"})
+            overall_success = False
+
+    db.execute(
+        "INSERT INTO cloud_script_log (player_id, script_name, result_json, success, executed_at) VALUES (?, ?, ?, ?, ?)",
+        (player_id, script_name, json.dumps(results), 1 if overall_success else 0, now_iso()),
+    )
+    db.commit()
+
+    return overall_success, results
+
+
+@app.route("/api/cloudscript/execute", methods=["POST"])
+@require_player
+def execute_cloud_script(player):
+    """Called from Unity — runs a named script by name only. The client never
+    supplies what the script does, only which one to run."""
+    body = request.get_json(force=True, silent=True) or {}
+    script_name = body.get("script_name")
+    if not script_name:
+        return jsonify({"error": "script_name is required"}), 400
+
+    db = get_db()
+    success, results = run_cloud_script(db, player["player_id"], script_name)
+    return jsonify({"success": success, "script_name": script_name, "results": results})
+
+
+@app.route("/api/admin/cloudscript", methods=["GET"])
+@require_admin
+def admin_list_cloud_scripts():
+    db = get_db()
+    rows = db.execute("SELECT * FROM cloud_scripts ORDER BY script_name").fetchall()
+    scripts = [
+        {
+            "script_name": r["script_name"],
+            "description": r["description"],
+            "actions": json.loads(r["actions_json"]),
+        }
+        for r in rows
+    ]
+    return jsonify({"scripts": scripts})
+
+
+@app.route("/api/admin/cloudscript", methods=["POST"])
+@require_admin
+def admin_upsert_cloud_script():
+    body = request.get_json(force=True, silent=True) or {}
+    name = (body.get("script_name") or "").strip()
+    actions = body.get("actions")
+    description = body.get("description")
+
+    if not name or not isinstance(actions, list) or len(actions) == 0:
+        return jsonify({"error": "script_name and a non-empty actions list are required"}), 400
+
+    for action in actions:
+        if action.get("type") not in VALID_ACTION_TYPES:
+            return jsonify({"error": f"Invalid action type: {action.get('type')}. Must be one of {sorted(VALID_ACTION_TYPES)}"}), 400
+
+    db = get_db()
+    db.execute(
+        """INSERT INTO cloud_scripts (script_name, actions_json, description, created_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(script_name) DO UPDATE SET actions_json=excluded.actions_json, description=excluded.description""",
+        (name, json.dumps(actions), description, now_iso()),
+    )
+    db.commit()
+    return jsonify({"success": True, "script_name": name})
+
+
+@app.route("/api/admin/cloudscript/<script_name>", methods=["DELETE"])
+@require_admin
+def admin_delete_cloud_script(script_name):
+    db = get_db()
+    db.execute("DELETE FROM cloud_scripts WHERE script_name = ?", (script_name,))
+    db.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/cloudscript/<script_name>/execute/<player_id>", methods=["POST"])
+@require_admin
+def admin_execute_cloud_script(script_name, player_id):
+    """Lets the dashboard manually test-run a script against a specific player."""
+    db = get_db()
+    player = db.execute("SELECT 1 FROM players WHERE player_id = ?", (player_id,)).fetchone()
+    if not player:
+        return jsonify({"error": "Player not found"}), 404
+    success, results = run_cloud_script(db, player_id, script_name)
+    return jsonify({"success": success, "script_name": script_name, "results": results})
+
+
+@app.route("/api/admin/players/<player_id>/cloudscript-log", methods=["GET"])
+@require_admin
+def admin_get_cloudscript_log(player_id):
+    db = get_db()
+    rows = db.execute(
+        "SELECT script_name, result_json, success, executed_at FROM cloud_script_log WHERE player_id = ? ORDER BY executed_at DESC LIMIT 50",
+        (player_id,),
+    ).fetchall()
+    return jsonify(
+        {
+            "log": [
+                {
+                    "script_name": r["script_name"],
+                    "results": json.loads(r["result_json"]) if r["result_json"] else [],
+                    "success": bool(r["success"]),
+                    "executed_at": r["executed_at"],
+                }
+                for r in rows
+            ]
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
 # Admin API (used by the GitHub Pages dashboard)
 # ---------------------------------------------------------------------------
 
@@ -514,6 +751,7 @@ def admin_get_player(player_id):
                 "created_at": player["created_at"],
                 "last_login": player["last_login"],
                 "banned": bool(player["banned"]),
+                "ban_reason": player["ban_reason"],
             },
             "currencies": {r["currency_code"]: r["amount"] for r in currencies},
             "data": {r["key"]: json.loads(r["value"]) for r in data_rows},
@@ -608,10 +846,25 @@ def admin_grant_item(player_id):
 def admin_ban_player(player_id):
     body = request.get_json(force=True, silent=True) or {}
     banned = 1 if body.get("banned", True) else 0
+    reason = body.get("reason")
     db = get_db()
-    db.execute("UPDATE players SET banned = ? WHERE player_id = ?", (banned, player_id))
+    db.execute(
+        "UPDATE players SET banned = ?, ban_reason = ? WHERE player_id = ?",
+        (banned, reason if banned else None, player_id),
+    )
     db.commit()
-    return jsonify({"success": True, "banned": bool(banned)})
+    return jsonify({"success": True, "banned": bool(banned), "reason": reason})
+
+
+@app.route("/api/admin/players/<player_id>/logins", methods=["GET"])
+@require_admin
+def admin_get_logins(player_id):
+    db = get_db()
+    rows = db.execute(
+        "SELECT logged_in_at FROM player_logins WHERE player_id = ? ORDER BY logged_in_at DESC LIMIT 50",
+        (player_id,),
+    ).fetchall()
+    return jsonify({"logins": [r["logged_in_at"] for r in rows]})
 
 
 @app.route("/api/admin/catalog", methods=["POST"])
