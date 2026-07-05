@@ -72,7 +72,24 @@ function showTab(tabName) {
 
   if (tabName === "catalog") loadCatalog();
   if (tabName === "currencies") loadCurrencies();
+  if (tabName === "cloudscript") loadCloudScripts();
   if (tabName === "item-create") populateCurrencyDropdown();
+}
+
+// ---- Player detail sub-tab navigation ----
+document.querySelectorAll(".subnav-btn[data-subtab]").forEach((btn) => {
+  btn.addEventListener("click", () => showSubTab(btn.dataset.subtab));
+});
+
+function showSubTab(subtabName) {
+  document.querySelectorAll(".subtab").forEach((t) => t.classList.add("hidden"));
+  document.querySelectorAll(".subnav-btn").forEach((b) => b.classList.remove("active"));
+  $(`subtab-${subtabName}`).classList.remove("hidden");
+  const btn = document.querySelector(`.subnav-btn[data-subtab="${subtabName}"]`);
+  if (btn) btn.classList.add("active");
+
+  if (subtabName === "logins") loadPlayerLogins(state.currentPlayerId);
+  if (subtabName === "cloudscript-player") loadPlayerCloudScriptPanel(state.currentPlayerId);
 }
 
 // ---- Players list ----
@@ -119,30 +136,28 @@ async function openPlayerDetail(playerId) {
   state.currentPlayerId = playerId;
   $("detail-nav").style.display = "block";
   showTab("player-detail");
+  showSubTab("overview");
   $("detail-title").textContent = `Player — ${playerId}`;
 
   try {
     await populateSetCurrencyDropdown();
     const { player, currencies, data, inventory } = await api(`/api/admin/players/${playerId}`);
 
-    $("detail-currencies").innerHTML = Object.entries(currencies).length
-      ? Object.entries(currencies).map(([code, amt]) => `<div class="row-item"><span>${code}</span><span>${amt}</span></div>`).join("")
-      : `<p style="color:var(--steel-400)">No currencies yet.</p>`;
-
-    $("detail-inventory").innerHTML = inventory.length
-      ? inventory.map((i) => `
-          <div class="row-item">
-            <span>${i.name} ×${i.quantity}</span>
-            <button class="small-btn revoke-item-btn" data-instance="${i.instance_id}">Revoke</button>
-          </div>`).join("")
-      : `<p style="color:var(--steel-400)">No items yet.</p>`;
-
-    $("detail-data").textContent = Object.keys(data).length ? JSON.stringify(data, null, 2) : "// no cloud save data yet";
-
+    // Overview
     $("detail-account").innerHTML = `
       <div class="row-item"><span>Device ID</span><span>${player.device_id.slice(0, 12)}…</span></div>
       <div class="row-item"><span>Created</span><span>${formatDate(player.created_at)}</span></div>
       <div class="row-item"><span>Last login</span><span>${formatDate(player.last_login)}</span></div>
+    `;
+    $("detail-data").textContent = Object.keys(data).length ? JSON.stringify(data, null, 2) : "// no cloud save data yet";
+
+    // Bans
+    $("detail-ban-status").innerHTML = `
+      <div class="row-item">
+        <span>Status</span>
+        <span class="badge ${player.banned ? "badge-banned" : "badge-ok"}">${player.banned ? "Banned" : "Active"}</span>
+      </div>
+      ${player.banned && player.ban_reason ? `<div class="row-item"><span>Reason</span><span>${player.ban_reason}</span></div>` : ""}
     `;
     const banBtn = $("ban-toggle-btn");
     banBtn.textContent = player.banned ? "Unban Player" : "Ban Player";
@@ -152,9 +167,26 @@ async function openPlayerDetail(playerId) {
     banBtn.style.padding = "10px";
     banBtn.style.marginTop = "8px";
     banBtn.onclick = async () => {
-      await api(`/api/admin/players/${playerId}/ban`, { method: "POST", body: { banned: !player.banned } });
+      const reason = $("ban-reason-input").value.trim() || null;
+      await api(`/api/admin/players/${playerId}/ban`, { method: "POST", body: { banned: !player.banned, reason } });
+      $("ban-reason-input").value = "";
       openPlayerDetail(playerId);
+      showSubTab("bans");
     };
+
+    // Currency
+    $("detail-currencies").innerHTML = Object.entries(currencies).length
+      ? Object.entries(currencies).map(([code, amt]) => `<div class="row-item"><span>${code}</span><span>${amt}</span></div>`).join("")
+      : `<p style="color:var(--steel-400)">No currencies yet.</p>`;
+
+    // Inventory
+    $("detail-inventory").innerHTML = inventory.length
+      ? inventory.map((i) => `
+          <div class="row-item">
+            <span>${i.name} ×${i.quantity}</span>
+            <button class="small-btn revoke-item-btn" data-instance="${i.instance_id}">Revoke</button>
+          </div>`).join("")
+      : `<p style="color:var(--steel-400)">No items yet.</p>`;
 
     // Wire up per-item revoke buttons
     document.querySelectorAll(".revoke-item-btn").forEach((btn) => {
@@ -163,6 +195,7 @@ async function openPlayerDetail(playerId) {
         try {
           await api(`/api/admin/players/${playerId}/inventory/${btn.dataset.instance}`, { method: "DELETE" });
           openPlayerDetail(playerId);
+          showSubTab("inventory");
         } catch (e) {
           alert("Error: " + e.message);
         }
@@ -170,6 +203,67 @@ async function openPlayerDetail(playerId) {
     });
   } catch (e) {
     alert("Failed to load player: " + e.message);
+  }
+}
+
+async function loadPlayerLogins(playerId) {
+  const container = $("detail-logins");
+  container.innerHTML = `<p style="color:var(--steel-400)">Loading…</p>`;
+  try {
+    const { logins } = await api(`/api/admin/players/${playerId}/logins`);
+    container.innerHTML = logins.length
+      ? logins.map((ts) => `<div class="row-item"><span>${formatDate(ts)}</span></div>`).join("")
+      : `<p style="color:var(--steel-400)">No login history yet.</p>`;
+  } catch (e) {
+    container.innerHTML = `<p style="color:#f87171">Error: ${e.message}</p>`;
+  }
+}
+
+async function loadPlayerCloudScriptPanel(playerId) {
+  const listEl = $("cs-player-script-list");
+  const logEl = $("cs-player-log");
+  listEl.innerHTML = `<p style="color:var(--steel-400)">Loading…</p>`;
+  logEl.innerHTML = `<p style="color:var(--steel-400)">Loading…</p>`;
+
+  try {
+    const { scripts } = await api("/api/admin/cloudscript");
+    listEl.innerHTML = scripts.length
+      ? scripts.map((s) => `
+          <div class="row-item">
+            <span>${s.script_name}${s.description ? ` — ${s.description}` : ""}</span>
+            <button class="small-btn run-script-btn" data-name="${s.script_name}">Run</button>
+          </div>`).join("")
+      : `<p style="color:var(--steel-400)">No cloud scripts yet — create one in the Cloud Script tab.</p>`;
+
+    document.querySelectorAll(".run-script-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const result = await api(`/api/admin/cloudscript/${btn.dataset.name}/execute/${playerId}`, { method: "POST" });
+          alert(result.success ? `Script ran successfully.` : `Script ran with errors — check the log below.`);
+          loadPlayerCloudScriptPanel(playerId);
+        } catch (e) {
+          alert("Error: " + e.message);
+        }
+      });
+    });
+  } catch (e) {
+    listEl.innerHTML = `<p style="color:#f87171">Error: ${e.message}</p>`;
+  }
+
+  try {
+    const { log } = await api(`/api/admin/players/${playerId}/cloudscript-log`);
+    logEl.innerHTML = log.length
+      ? log.map((entry) => `
+          <div class="row-item" style="flex-direction:column; align-items:flex-start;">
+            <div style="display:flex; justify-content:space-between; width:100%;">
+              <span>${entry.script_name}</span>
+              <span class="badge ${entry.success ? "badge-ok" : "badge-banned"}">${entry.success ? "Success" : "Error"}</span>
+            </div>
+            <span style="color:var(--steel-400); font-size:11px;">${formatDate(entry.executed_at)}</span>
+          </div>`).join("")
+      : `<p style="color:var(--steel-400)">No executions yet for this player.</p>`;
+  } catch (e) {
+    logEl.innerHTML = `<p style="color:#f87171">Error: ${e.message}</p>`;
   }
 }
 
@@ -356,5 +450,66 @@ $("currency-form").addEventListener("submit", async (e) => {
     loadCurrencies();
   } catch (err) {
     $("currency-form-error").textContent = "Error: " + err.message;
+  }
+});
+
+// ---- Cloud Script ----
+async function loadCloudScripts() {
+  const tbody = document.querySelector("#cloudscript-table tbody");
+  tbody.innerHTML = `<tr><td colspan="4">Loading…</td></tr>`;
+  try {
+    const { scripts } = await api("/api/admin/cloudscript");
+    tbody.innerHTML = "";
+    if (scripts.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4">No scripts yet. Create one below.</td></tr>`;
+      return;
+    }
+    scripts.forEach((s) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${s.script_name}</td>
+        <td>${s.description || "—"}</td>
+        <td>${s.actions.length} action(s)</td>
+        <td><button class="small-btn delete-cloudscript-btn" data-name="${s.script_name}">Delete</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    document.querySelectorAll(".delete-cloudscript-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Delete cloud script "${btn.dataset.name}"? Any Unity code calling it by name will start failing.`)) return;
+        try {
+          await api(`/api/admin/cloudscript/${btn.dataset.name}`, { method: "DELETE" });
+          loadCloudScripts();
+        } catch (e) {
+          alert("Error: " + e.message);
+        }
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4">Error: ${e.message}</td></tr>`;
+  }
+}
+
+$("cloudscript-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("cloudscript-form-error").textContent = "";
+
+  const name = $("cs-name").value.trim();
+  const description = $("cs-description").value.trim() || null;
+  let actions;
+  try {
+    actions = JSON.parse($("cs-actions").value);
+    if (!Array.isArray(actions)) throw new Error("Actions must be a JSON array.");
+  } catch (parseErr) {
+    $("cloudscript-form-error").textContent = "Invalid JSON in actions: " + parseErr.message;
+    return;
+  }
+
+  try {
+    await api("/api/admin/cloudscript", { method: "POST", body: { script_name: name, description, actions } });
+    e.target.reset();
+    loadCloudScripts();
+  } catch (err) {
+    $("cloudscript-form-error").textContent = "Error: " + err.message;
   }
 });
