@@ -59,13 +59,20 @@ document.querySelectorAll(".nav-btn[data-tab]").forEach((btn) => {
   btn.addEventListener("click", () => showTab(btn.dataset.tab));
 });
 $("back-to-players").addEventListener("click", () => showTab("players"));
+$("back-to-catalog").addEventListener("click", () => showTab("catalog"));
 
 function showTab(tabName) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.add("hidden"));
   document.querySelectorAll(".nav-btn").forEach((b) => b.classList.remove("active"));
   $(`tab-${tabName}`).classList.remove("hidden");
-  const navBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`);
+  // Highlight the matching sidebar entry even for sub-pages like item-create
+  const navMatch = tabName === "item-create" ? "catalog" : tabName;
+  const navBtn = document.querySelector(`.nav-btn[data-tab="${navMatch}"]`);
   if (navBtn) navBtn.classList.add("active");
+
+  if (tabName === "catalog") loadCatalog();
+  if (tabName === "currencies") loadCurrencies();
+  if (tabName === "item-create") populateCurrencyDropdown();
 }
 
 // ---- Players list ----
@@ -115,6 +122,7 @@ async function openPlayerDetail(playerId) {
   $("detail-title").textContent = `Player — ${playerId}`;
 
   try {
+    await populateSetCurrencyDropdown();
     const { player, currencies, data, inventory } = await api(`/api/admin/players/${playerId}`);
 
     $("detail-currencies").innerHTML = Object.entries(currencies).length
@@ -122,7 +130,11 @@ async function openPlayerDetail(playerId) {
       : `<p style="color:var(--steel-400)">No currencies yet.</p>`;
 
     $("detail-inventory").innerHTML = inventory.length
-      ? inventory.map((i) => `<div class="row-item"><span>${i.name} ×${i.quantity}</span><span style="color:var(--steel-400)">${i.instance_id.slice(0, 8)}</span></div>`).join("")
+      ? inventory.map((i) => `
+          <div class="row-item">
+            <span>${i.name} ×${i.quantity}</span>
+            <button class="small-btn revoke-item-btn" data-instance="${i.instance_id}">Revoke</button>
+          </div>`).join("")
       : `<p style="color:var(--steel-400)">No items yet.</p>`;
 
     $("detail-data").textContent = Object.keys(data).length ? JSON.stringify(data, null, 2) : "// no cloud save data yet";
@@ -143,13 +155,51 @@ async function openPlayerDetail(playerId) {
       await api(`/api/admin/players/${playerId}/ban`, { method: "POST", body: { banned: !player.banned } });
       openPlayerDetail(playerId);
     };
+
+    // Wire up per-item revoke buttons
+    document.querySelectorAll(".revoke-item-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Revoke this item from the player? This cannot be undone.")) return;
+        try {
+          await api(`/api/admin/players/${playerId}/inventory/${btn.dataset.instance}`, { method: "DELETE" });
+          openPlayerDetail(playerId);
+        } catch (e) {
+          alert("Error: " + e.message);
+        }
+      });
+    });
   } catch (e) {
     alert("Failed to load player: " + e.message);
   }
 }
 
+$("delete-account-btn").addEventListener("click", async () => {
+  const playerId = state.currentPlayerId;
+  if (!confirm(`Permanently delete account ${playerId}? This deletes all their data, currency, and inventory. This cannot be undone.`)) return;
+  try {
+    await api(`/api/admin/players/${playerId}`, { method: "DELETE" });
+    showTab("players");
+    loadPlayers();
+  } catch (e) {
+    alert("Error: " + e.message);
+  }
+});
+
+async function populateSetCurrencyDropdown() {
+  const select = $("set-currency-code");
+  select.innerHTML = `<option value="">Loading…</option>`;
+  try {
+    const { currencies } = await api("/api/currencies");
+    select.innerHTML = currencies.length
+      ? currencies.map((c) => `<option value="${c.code}">${c.name} (${c.code})</option>`).join("")
+      : `<option value="">No currencies yet — create one in the Currency tab</option>`;
+  } catch (e) {
+    select.innerHTML = `<option value="">Failed to load</option>`;
+  }
+}
+
 $("set-currency-btn").addEventListener("click", async () => {
-  const code = $("set-currency-code").value.trim().toUpperCase();
+  const code = $("set-currency-code").value;
   const amount = parseInt($("set-currency-amount").value, 10);
   if (!code || isNaN(amount)) return alert("Enter a currency code and amount.");
   try {
@@ -176,22 +226,135 @@ $("grant-item-btn").addEventListener("click", async () => {
 });
 
 // ---- Catalog ----
+$("new-item-btn").addEventListener("click", () => showTab("item-create"));
+
+async function loadCatalog() {
+  const tbody = document.querySelector("#catalog-table tbody");
+  tbody.innerHTML = `<tr><td colspan="5">Loading…</td></tr>`;
+  try {
+    const { catalog } = await api("/api/catalog");
+    tbody.innerHTML = "";
+    if (catalog.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5">No items yet. Click "+ New Item" to add one.</td></tr>`;
+      return;
+    }
+    catalog.forEach((item) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${item.item_id}</td>
+        <td>${item.name}</td>
+        <td>${item.item_class || "—"}</td>
+        <td>${item.price} ${item.currency_code}</td>
+        <td><button class="small-btn delete-catalog-btn" data-id="${item.item_id}">Delete</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    document.querySelectorAll(".delete-catalog-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Delete catalog item "${btn.dataset.id}"? Existing player inventories keep the item; only future purchases/grants are affected.`)) return;
+        try {
+          await api(`/api/admin/catalog/${btn.dataset.id}`, { method: "DELETE" });
+          loadCatalog();
+        } catch (e) {
+          alert("Error: " + e.message);
+        }
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function populateCurrencyDropdown() {
+  const select = $("item-currency");
+  select.innerHTML = `<option value="">Loading currencies…</option>`;
+  try {
+    const { currencies } = await api("/api/currencies");
+    if (currencies.length === 0) {
+      select.innerHTML = `<option value="">No currencies yet — create one in the Currency tab first</option>`;
+      return;
+    }
+    select.innerHTML = currencies.map((c) => `<option value="${c.code}">${c.name} (${c.code})</option>`).join("");
+  } catch (e) {
+    select.innerHTML = `<option value="">Failed to load currencies</option>`;
+  }
+}
+
 $("catalog-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  $("catalog-form-error").textContent = "";
   const body = {
     item_id: $("item-id").value.trim(),
     name: $("item-name").value.trim(),
     description: $("item-desc").value.trim() || null,
-    currency_code: $("item-currency").value.trim().toUpperCase(),
+    currency_code: $("item-currency").value,
     price: parseInt($("item-price").value, 10),
     item_class: $("item-class").value.trim() || null,
     icon_url: $("item-icon").value.trim() || null,
   };
+  if (!body.currency_code) {
+    $("catalog-form-error").textContent = "Select a currency (create one first if the list is empty).";
+    return;
+  }
   try {
     await api("/api/admin/catalog", { method: "POST", body });
-    alert(`Saved item: ${body.item_id}`);
     e.target.reset();
+    showTab("catalog");
   } catch (err) {
-    alert("Error: " + err.message);
+    $("catalog-form-error").textContent = "Error: " + err.message;
+  }
+});
+
+// ---- Currencies ----
+async function loadCurrencies() {
+  const tbody = document.querySelector("#currency-table tbody");
+  tbody.innerHTML = `<tr><td colspan="3">Loading…</td></tr>`;
+  try {
+    const { currencies } = await api("/api/currencies");
+    tbody.innerHTML = "";
+    if (currencies.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="3">No currencies yet. Create one below.</td></tr>`;
+      return;
+    }
+    currencies.forEach((c) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${c.code}</td>
+        <td>${c.name}</td>
+        <td><button class="small-btn delete-currency-btn" data-code="${c.code}">Delete</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    document.querySelectorAll(".delete-currency-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Delete currency "${btn.dataset.code}"? Catalog items or player balances using it will keep referencing a currency that no longer exists.`)) return;
+        try {
+          await api(`/api/admin/currencies/${btn.dataset.code}`, { method: "DELETE" });
+          loadCurrencies();
+        } catch (e) {
+          alert("Error: " + e.message);
+        }
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="3">Error: ${e.message}</td></tr>`;
+  }
+}
+
+$("currency-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("currency-form-error").textContent = "";
+  const code = $("new-currency-code").value.trim().toUpperCase();
+  const name = $("new-currency-name").value.trim();
+  if (!code || !name) {
+    $("currency-form-error").textContent = "Both code and name are required.";
+    return;
+  }
+  try {
+    await api("/api/admin/currencies", { method: "POST", body: { code, name } });
+    e.target.reset();
+    loadCurrencies();
+  } catch (err) {
+    $("currency-form-error").textContent = "Error: " + err.message;
   }
 });
