@@ -758,9 +758,22 @@ def admin_get_cloudscript_log(player_id):
 def admin_list_players():
     db = get_db()
     rows = db.execute(
-        "SELECT player_id, device_id, display_name, created_at, last_login, banned FROM players ORDER BY created_at DESC"
+        "SELECT * FROM players ORDER BY created_at DESC"
     ).fetchall()
-    return jsonify({"players": [dict(r) for r in rows]})
+    result = []
+    for r in rows:
+        still_banned = is_ban_still_active(db, r)
+        result.append(
+            {
+                "player_id": r["player_id"],
+                "device_id": r["device_id"],
+                "display_name": r["display_name"],
+                "created_at": r["created_at"],
+                "last_login": r["last_login"],
+                "banned": still_banned,
+            }
+        )
+    return jsonify({"players": result})
 
 
 @app.route("/api/admin/players/<player_id>", methods=["GET"])
@@ -770,6 +783,10 @@ def admin_get_player(player_id):
     player = db.execute("SELECT * FROM players WHERE player_id = ?", (player_id,)).fetchone()
     if not player:
         return jsonify({"error": "Player not found"}), 404
+
+    # Auto-lift the ban if it already expired, then re-fetch the fresh row
+    is_ban_still_active(db, player)
+    player = db.execute("SELECT * FROM players WHERE player_id = ?", (player_id,)).fetchone()
 
     currencies = db.execute(
         "SELECT currency_code, amount FROM currencies WHERE player_id = ?", (player_id,)
@@ -819,6 +836,8 @@ def admin_delete_player(player_id):
     player = db.execute("SELECT 1 FROM players WHERE player_id = ?", (player_id,)).fetchone()
     if not player:
         return jsonify({"error": "Player not found"}), 404
+    db.execute("DELETE FROM cloud_script_log WHERE player_id = ?", (player_id,))
+    db.execute("DELETE FROM player_logins WHERE player_id = ?", (player_id,))
     db.execute("DELETE FROM inventory WHERE player_id = ?", (player_id,))
     db.execute("DELETE FROM player_data WHERE player_id = ?", (player_id,))
     db.execute("DELETE FROM currencies WHERE player_id = ?", (player_id,))
@@ -895,7 +914,7 @@ def admin_ban_player(player_id):
     expires_at = None
     if banned and duration_minutes:
         try:
-            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=int(duration_minutes))).isoformat()
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=float(duration_minutes))).isoformat()
         except (TypeError, ValueError):
             return jsonify({"error": "duration_minutes must be a number"}), 400
 
