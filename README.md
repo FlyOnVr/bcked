@@ -1,119 +1,26 @@
-# Fusion Backend — a custom game backend for Fusion Studios
+# Fusion Backend is a backend system similar to playfab that FRAGMENT will be using, this is self hosted (up 24/7) so i decided to release it for free
+## [Fusion Backend Dashboard](https://fusionstudiosvr.com/Dash/)
+# 1. Deploy the backend to Render
 
-A working, self-hosted alternative to PlayFab covering: player accounts/auth,
-virtual currencies, cloud save, and an inventory/catalog/store system, plus an
-admin dashboard.
-
-**Important architectural note:** GitHub Pages only hosts static files — it
-cannot run a database or server-side logic. So the split is:
-
-- **`backend/`** → Flask + SQLite API. This is the real "PlayFab" — it must run
-  on a real server. Deploy it to **Render** (same as your Discord bot).
-- **`admin-dashboard/`** → static HTML/JS/CSS. This *does* go on **GitHub
-  Pages**, and it talks to your Render backend over the network using your
-  admin key.
-- **`unity-scripts/`** → C# scripts for your Unity project that call the
-  backend directly (not through GitHub Pages at all).
-
-```
-Unity Game  ──────────┐
-                       ├──▶  Render (Flask + SQLite)  ◀── GitHub Pages (Admin Dashboard)
-Admin Dashboard  ──────┘
-```
-
----
-
-## 1. Deploy the backend to Render
-
-1. Push the `backend/` folder to a new GitHub repo (or a subfolder of an
-   existing one).
-2. In Render: **New → Web Service**, connect the repo.
+1. Push the backend folder to a new GitHub repo.
+2. In Render log in or create a new account then press: New → Web Service, link your github account and open the backend repo.
 3. Settings:
-   - **Build command:** `pip install -r requirements.txt`
-   - **Start command:** `gunicorn app:app`
+   - Build command: **pip install -r requirements.txt**
+   - Start command: **gunicorn app:app**
 4. Add an environment variable:
-   - `ADMIN_KEY` = a long random secret (used to authenticate the admin
-     dashboard — treat it like a password). Generate one with:
+   - **ADMIN_KEY** = a random secret string (like a password for the dashboard). Generate one by opening your cmd and pasting:
      ```
-     python3 -c "import secrets; print(secrets.token_hex(32))"
+     python -c "import secrets; print(secrets.token_hex(32))"
      ```
-5. Deploy. Render will give you a URL like `https://fusion-backend.onrender.com`.
-6. Sanity check: visit `https://fusion-backend.onrender.com/health` — you
-   should see `{"status": "ok", ...}`.
+     or simply write random numbers and letters.
+     go to Environment variables and paste **ADMIN_KEY** in the Key tab and paste your key in the Value tab
+5. Deploy to Render and it'll give you a URL like `https://backend.onrender.com`.
+6. log in or create an account at `uptimerobot.com`, then choose HTTP / website monitoring and paste your health render url (`https://backend.onrender.com/health`) and make the monitor interval 5 minutes
 
-Note: on Render's free tier the service sleeps after inactivity (same issue
-you solved with UptimeRobot for the Discord bot) — set up the same ping if you
-want it always warm.
+## 2. Import the SDK to unity
 
-**Data persistence warning:** Render's free tier filesystem is ephemeral —
-the SQLite file can be wiped on redeploy. For a game with real players, either
-upgrade to a paid Render disk (persistent disk add-on) or swap SQLite for a
-managed Postgres database (Render offers this too). Fine for now while
-testing; upgrade before shipping.
-
----
-
-## 2. Deploy the admin dashboard to GitHub Pages
-
-1. Put the `admin-dashboard/` folder's contents (`index.html`, `style.css`,
-   `app.js`) into a repo — e.g. a new repo, or a `docs/` folder or separate
-   branch of your existing `fusionstudiosvr.com` repo.
-2. In that repo's Settings → Pages, set the source to the folder containing
-   `index.html`.
-3. Once published, open the dashboard URL, enter:
-   - **Backend URL:** your Render URL (no trailing slash)
-   - **Admin key:** the `ADMIN_KEY` you set in Render
-4. You'll see all players, their currencies, inventory, and cloud save data,
-   and can grant items/currency or ban accounts.
-
-Keep the admin key private — anyone with it has full admin access to your
-player data. Don't commit it into the dashboard's source code.
-
----
-
-## 3. Wire up Unity
-
-1. Copy all files from `unity-scripts/` into your Unity project, e.g.
-   `Assets/FusionBackend/`.
-2. Create an empty GameObject in your first/bootstrap scene, e.g.
-   `BackendManager`, and attach:
-   - `FusionAPIClient` — set `Backend Url` in the Inspector to your Render URL
-   - `FusionAuthManager`
-   - `FusionCurrencyManager`
-   - `FusionCloudSaveManager`
-   - `FusionInventoryManager`
-3. Call `FusionAuthManager.Instance.Login(...)` once at startup (see
-   `FusionBootstrapExample.cs`). This automatically creates a new PlayFab-style
-   player ID (`FLY-XXXXXXXX`) the very first time the game runs on a device,
-   and logs the same player back in on every subsequent launch.
-4. From anywhere in your game, call:
-   - `FusionCurrencyManager.Instance.AddCurrency(...)` / `SubtractCurrency(...)`
-   - `FusionInventoryManager.Instance.GetCatalog(...)` / `PurchaseItem(...)` / `GetInventory(...)`
-   - `FusionCloudSaveManager.Instance.SaveValue(...)` / `LoadAll(...)`
-
-All calls are async (coroutine-based) and take `onSuccess`/`onError`
-callbacks — nothing blocks the main thread.
-
----
-
-## 4. Adding catalog items
-
-Items must exist in the catalog before players can buy or be granted them.
-Add them from the admin dashboard's **Catalog** tab (e.g. `item_id: sword_iron`,
-`currency_code: GOLD`, `price: 250`).
-
----
-
-## Security notes (read before going live)
-
-- Currency add/subtract endpoints currently trust the client-authenticated
-  player call directly — fine for testing, but for a real economy you should
-  move reward-granting logic (e.g. "player killed an NPC, give 10 gold") into
-  server-side endpoints that Unity calls with a specific action ID, rather
-  than letting the client say "give me 10 gold" directly. Otherwise a
-  modified client could grant itself currency. I can help build that
-  server-authoritative layer next if you want it.
-- Rotate `ADMIN_KEY` if it's ever exposed (e.g. accidentally committed).
-- This is a solid foundation but is not a drop-in PlayFab replacement for
-  matchmaking, multiplayer server hosting, or CloudScript — those are much
-  larger systems. Happy to scope any of those next if you need them.
+1. Download the `Fusion SDK` unity package.
+2. Import the Backend Manager Prefab (located in FusionSDK➡Examples➡Prefabs)
+3. Go to the API Client child object of Backend Manager and paste in your backend url `https://backend.onrender.com`.
+4. Now you can view the Bootstrapper child object of Backend Manager, and add the currency code you created.
+5. Then you can go to FusionSDK➡Examples➡Prefabs to test the Shop Example, Cloud Script Example, and Ban Example.
