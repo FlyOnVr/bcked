@@ -11,7 +11,7 @@ import sqlite3
 import secrets
 import string
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, g
@@ -135,12 +135,13 @@ def init_db():
     )
     conn.commit()
 
-    # Migration: add ban_reason to players if upgrading from an older schema
-    try:
-        conn.execute("ALTER TABLE players ADD COLUMN ban_reason TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # Migration: add ban_reason / ban_expires_at to players if upgrading from an older schema
+    for column, coltype in [("ban_reason", "TEXT"), ("ban_expires_at", "TEXT")]:
+        try:
+            conn.execute(f"ALTER TABLE players ADD COLUMN {column} {coltype}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
     conn.close()
 
@@ -168,6 +169,33 @@ def new_instance_id():
 # Auth decorators
 # ---------------------------------------------------------------------------
 
+def is_ban_still_active(db, player_row):
+    """Returns True if the player is currently banned. Auto-lifts the ban in the DB
+    if it had an expiry time that has already passed."""
+    if not player_row["banned"]:
+        return False
+
+    expires_at = player_row["ban_expires_at"]
+    if not expires_at:
+        return True  # permanent ban, no expiry
+
+    try:
+        expiry_dt = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True
+
+    if datetime.now(timezone.utc) < expiry_dt:
+        return True
+
+    # Ban has expired — lift it automatically
+    db.execute(
+        "UPDATE players SET banned = 0, ban_reason = NULL, ban_expires_at = NULL WHERE player_id = ?",
+        (player_row["player_id"],),
+    )
+    db.commit()
+    return False
+
+
 def require_player(f):
     """Requires a valid Bearer session token, injects player_id into kwargs."""
 
@@ -183,8 +211,14 @@ def require_player(f):
         ).fetchone()
         if not row:
             return jsonify({"error": "Invalid session token"}), 401
-        if row["banned"]:
-            return jsonify({"error": "This account is banned"}), 403
+        if is_ban_still_active(db, row):
+            return jsonify(
+                {
+                    "error": "This account is banned",
+                    "ban_reason": row["ban_reason"],
+                    "ban_expires_at": row["ban_expires_at"],
+                }
+            ), 403
         return f(player=row, *args, **kwargs)
 
     return wrapper
@@ -253,12 +287,20 @@ def login():
     )
     db.commit()
 
+    # Re-fetch in case is_ban_still_active() auto-lifted an expired ban just now
+    banned = is_ban_still_active(db, row)
+    if banned:
+        row = db.execute("SELECT * FROM players WHERE player_id = ?", (row["player_id"],)).fetchone()
+
     return jsonify(
         {
             "player_id": row["player_id"],
             "session_token": token,
             "display_name": row["display_name"],
             "is_new_player": is_new,
+            "banned": banned,
+            "ban_reason": row["ban_reason"] if banned else None,
+            "ban_expires_at": row["ban_expires_at"] if banned else None,
         }
     )
 
@@ -752,6 +794,7 @@ def admin_get_player(player_id):
                 "last_login": player["last_login"],
                 "banned": bool(player["banned"]),
                 "ban_reason": player["ban_reason"],
+                "ban_expires_at": player["ban_expires_at"],
             },
             "currencies": {r["currency_code"]: r["amount"] for r in currencies},
             "data": {r["key"]: json.loads(r["value"]) for r in data_rows},
@@ -847,13 +890,22 @@ def admin_ban_player(player_id):
     body = request.get_json(force=True, silent=True) or {}
     banned = 1 if body.get("banned", True) else 0
     reason = body.get("reason")
+    duration_minutes = body.get("duration_minutes")  # omit/null = permanent ban
+
+    expires_at = None
+    if banned and duration_minutes:
+        try:
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=int(duration_minutes))).isoformat()
+        except (TypeError, ValueError):
+            return jsonify({"error": "duration_minutes must be a number"}), 400
+
     db = get_db()
     db.execute(
-        "UPDATE players SET banned = ?, ban_reason = ? WHERE player_id = ?",
-        (banned, reason if banned else None, player_id),
+        "UPDATE players SET banned = ?, ban_reason = ?, ban_expires_at = ? WHERE player_id = ?",
+        (banned, reason if banned else None, expires_at if banned else None, player_id),
     )
     db.commit()
-    return jsonify({"success": True, "banned": bool(banned), "reason": reason})
+    return jsonify({"success": True, "banned": bool(banned), "reason": reason, "ban_expires_at": expires_at})
 
 
 @app.route("/api/admin/players/<player_id>/logins", methods=["GET"])
