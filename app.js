@@ -158,6 +158,7 @@ async function openPlayerDetail(playerId) {
         <span class="badge ${player.banned ? "badge-banned" : "badge-ok"}">${player.banned ? "Banned" : "Active"}</span>
       </div>
       ${player.banned && player.ban_reason ? `<div class="row-item"><span>Reason</span><span>${player.ban_reason}</span></div>` : ""}
+      ${player.banned ? `<div class="row-item"><span>Expires</span><span>${player.ban_expires_at ? formatDate(player.ban_expires_at) : "Permanent"}</span></div>` : ""}
     `;
     const banBtn = $("ban-toggle-btn");
     banBtn.textContent = player.banned ? "Unban Player" : "Ban Player";
@@ -168,8 +169,11 @@ async function openPlayerDetail(playerId) {
     banBtn.style.marginTop = "8px";
     banBtn.onclick = async () => {
       const reason = $("ban-reason-input").value.trim() || null;
-      await api(`/api/admin/players/${playerId}/ban`, { method: "POST", body: { banned: !player.banned, reason } });
+      const durationRaw = $("ban-duration-input").value.trim();
+      const duration_minutes = durationRaw ? parseInt(durationRaw, 10) : null;
+      await api(`/api/admin/players/${playerId}/ban`, { method: "POST", body: { banned: !player.banned, reason, duration_minutes } });
       $("ban-reason-input").value = "";
+      $("ban-duration-input").value = "";
       openPlayerDetail(playerId);
       showSubTab("bans");
     };
